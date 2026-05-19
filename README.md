@@ -8,7 +8,7 @@ An MCP (Model Context Protocol) server that exposes Xray Cloud test management o
 |------|-------------|
 | `create_test_case` | Create a Manual, Cucumber, or Generic test case with steps |
 | `update_test_case` | Update summary, steps, type, labels, priority, folder |
-| `get_test_case` | Retrieve full test case details |
+| `get_test_case` | Retrieve full test case details (supports both Jira key and internal ID) |
 | `create_test_set` | Create a test set, optionally pre-populated with tests |
 | `update_test_set` | Add/remove tests, update fields and folder |
 | `get_test_set` | Retrieve test set details and member tests |
@@ -19,51 +19,17 @@ An MCP (Model Context Protocol) server that exposes Xray Cloud test management o
 - Xray Cloud API credentials (Client ID + Client Secret)
   - Generate at: **Xray Cloud → Settings → API Keys**
 
-## Setup
+## Quick Start (for Teams)
 
-```bash
-# Install dependencies
-npm install
-
-# Copy env file and add your credentials
-cp .env.example .env
-# Edit .env with your XRAY_CLIENT_ID and XRAY_CLIENT_SECRET
-
-# Build
-npm run build
-
-# Start the server
-npm start
-```
-
-The server starts on `http://localhost:3000` by default.
-
-## Endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /sse` | SSE connection for MCP clients |
-| `POST /messages?sessionId=<id>` | Message endpoint for MCP communication |
-| `GET /health` | Health check |
-
-## VS Code / Copilot Integration
-
-### Option A: Install from GitHub (Recommended for Teams)
-
-Each team member runs:
-
-```bash
-npm install -g git+https://github.com/<your-org>/xray-mcp-server.git
-```
-
-Then add to `.vscode/mcp.json` in any project:
+No cloning or local setup needed. Just add this to `.vscode/mcp.json` in any project:
 
 ```json
 {
   "servers": {
     "xray": {
       "type": "stdio",
-      "command": "xray-mcp-server",
+      "command": "npx",
+      "args": ["github:basel68/xray-mcp-server"],
       "env": {
         "XRAY_CLIENT_ID": "${input:xrayClientId}",
         "XRAY_CLIENT_SECRET": "${input:xrayClientSecret}"
@@ -86,13 +52,30 @@ Then add to `.vscode/mcp.json` in any project:
 }
 ```
 
-### Option B: Clone and Run Locally
+That's it — `npx` downloads and runs the latest version from GitHub automatically.
+
+## Local Development Setup
 
 ```bash
-git clone https://github.com/<your-org>/xray-mcp-server.git
+git clone https://github.com/basel68/xray-mcp-server.git
 cd xray-mcp-server
 npm install
 npm run build
+npm start
+```
+
+## VS Code / Copilot Integration (Alternative Options)
+
+### Option A: npx from GitHub (Recommended)
+
+See **Quick Start** above.
+
+### Option B: Clone and Run Locally
+
+```bash
+git clone https://github.com/basel68/xray-mcp-server.git
+cd xray-mcp-server
+npm install
 ```
 
 Then use this `.vscode/mcp.json`:
@@ -126,17 +109,20 @@ Then use this `.vscode/mcp.json`:
 }
 ```
 
-### Option C: npx (No Install Required)
+### Option C: Global Install
 
-If published to npm or a private registry:
+```bash
+npm install -g git+https://github.com/basel68/xray-mcp-server.git
+```
+
+Then:
 
 ```json
 {
   "servers": {
     "xray": {
       "type": "stdio",
-      "command": "npx",
-      "args": ["xray-mcp-server"],
+      "command": "xray-mcp-server",
       "env": {
         "XRAY_CLIENT_ID": "${input:xrayClientId}",
         "XRAY_CLIENT_SECRET": "${input:xrayClientSecret}"
@@ -146,22 +132,21 @@ If published to npm or a private registry:
 }
 ```
 
-## Development
-
-```bash
-# Run in development mode (requires ts-node)
-npm run dev
-```
-
 ## Architecture
 
 ```
 src/
-├── index.ts           # Express + MCP server setup (SSE transport)
-├── auth.ts            # Xray Cloud authentication (token caching)
+├── index.ts           # MCP server setup (stdio transport)
 ├── xray-client.ts     # GraphQL client for Xray Cloud API
+├── types.ts           # Shared types and error classes
+├── auth/
+│   ├── AuthManager.ts # JWT authentication with caching
+│   ├── CredentialStore.ts # Credential resolution from env
+│   └── WriteGuard.ts  # Read/write access control
+├── clients/
+│   └── HttpClient.ts  # HTTP request layer
 └── tools/
-    ├── index.ts       # Re-exports all tools
+    ├── registry.ts    # Tool self-registration system
     ├── test-cases.ts  # Create/update/get test cases
     └── test-sets.ts   # Create/update/get test sets
 ```
@@ -169,3 +154,8 @@ src/
 ## API Reference
 
 This server uses the [Xray Cloud GraphQL API](https://docs.getxray.app/display/XRAYCLOUD/GraphQL+API) for all operations. Authentication is handled via the `/api/v2/authenticate` endpoint with client credentials.
+
+## Notes
+
+- `get_test_case` accepts both Jira keys (e.g. `PROJ-123`) and internal Xray issue IDs (e.g. `1707465`). If a Jira key is provided, it resolves the internal ID via JQL automatically.
+- Updates to `main` branch are picked up automatically on next server restart (npx fetches latest).
