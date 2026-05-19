@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { XrayClient } from "../xray-client.js";
 import { registerTool } from "./registry.js";
 import type { GraphQLResponse } from "../types.js";
+import { XrayGqlError } from "../types.js";
 
 // --- Schemas ---
 
@@ -55,6 +56,23 @@ const UpdateTestCaseSchema = z.object({
 const GetTestCaseSchema = z.object({
   issueId: z.string().describe("Jira issue ID of the test case (e.g. 'PROJ-123')"),
 });
+
+function parseGetTestCaseInput(args: unknown): z.infer<typeof GetTestCaseSchema> {
+  const raw = (args ?? {}) as Record<string, unknown>;
+  const issueId = (raw.issueId ?? (raw.input as Record<string, unknown> | undefined)?.issueId) as
+    | string
+    | undefined;
+
+  return GetTestCaseSchema.parse({ issueId });
+}
+
+function looksLikeJiraKey(value: string): boolean {
+  return /^[A-Z][A-Z0-9_]*-\d+$/i.test(value);
+}
+
+function escapeJqlValue(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
 
 // --- Tool Handlers ---
 
@@ -210,8 +228,55 @@ async function getTestCase(
     }
   `;
 
-  const data = await client.graphql<{ getTest: any }>(query, { issueId: input.issueId });
-  return data.getTest;
+  // Try direct lookup first — may fail if ID is invalid or not a Test issue
+  let data: { getTest: any } | null = null;
+  try {
+    data = await client.graphql<{ getTest: any }>(query, { issueId: input.issueId });
+  } catch (error: any) {
+    const msg = (error.message ?? "").toLowerCase();
+    // Xray resolver crashes with this message for non-test or non-existent issues
+    if (msg.includes("reading 'issueid'") || msg.includes("not found") || msg.includes("does not exist")) {
+      // Treat as not found — fall through to JQL resolution below
+    } else {
+      throw error; // Re-throw unexpected errors
+    }
+  }
+
+  if (data?.getTest) {
+    return data.getTest;
+  }
+
+  // Xray getTest may require internal issue IDs; Jira keys can be resolved via JQL.
+  if (!looksLikeJiraKey(input.issueId)) {
+    return null;
+  }
+
+  const resolveQuery = `
+    query ResolveTestIssueId($jql: String!) {
+      getTests(jql: $jql, limit: 1) {
+        total
+        results {
+          issueId
+          jira(fields: ["key"])
+        }
+      }
+    }
+  `;
+
+  const jql = `key = "${escapeJqlValue(input.issueId)}"`;
+  const resolved = await client.graphql<{
+    getTests?: {
+      results?: Array<{ issueId?: string | null }>;
+    };
+  }>(resolveQuery, { jql });
+
+  const resolvedIssueId = resolved.getTests?.results?.[0]?.issueId;
+  if (!resolvedIssueId) {
+    return null;
+  }
+
+  const resolvedData = await client.graphql<{ getTest: any }>(query, { issueId: resolvedIssueId });
+  return resolvedData.getTest;
 }
 
 // --- Register Tools ---
@@ -270,7 +335,7 @@ registerTool({
   handler: async (args, ctx) => {
     try {
       const client = (args._client as XrayClient) ?? undefined;
-      const input = GetTestCaseSchema.parse(args);
+      const input = parseGetTestCaseInput(args);
       const result = await getTestCase(client as XrayClient, input);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     } catch (error: any) {
